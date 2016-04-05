@@ -1,7 +1,7 @@
 <?php
 
 /**
- * @ingroup database
+ * @addtogroup database
  * @{
  */
 
@@ -377,7 +377,8 @@ interface SelectQueryInterface extends QueryConditionInterface, QueryAlterableIn
    * @param $field
    *   The field on which to order.
    * @param $direction
-   *   The direction to sort. Legal values are "ASC" and "DESC".
+   *   The direction to sort. Legal values are "ASC" and "DESC". Any other value
+   *   will be converted to "ASC".
    * @return SelectQueryInterface
    *   The called object.
    */
@@ -590,11 +591,13 @@ class SelectQueryExtender implements SelectQueryInterface {
   }
 
   public function hasAllTags() {
-    return call_user_func_array(array($this->query, 'hasAllTags'), func_get_args());
+    $args = func_get_args();
+    return call_user_func_array(array($this->query, 'hasAllTags'), $args);
   }
 
   public function hasAnyTag() {
-    return call_user_func_array(array($this->query, 'hasAnyTags'), func_get_args());
+    $args = func_get_args();
+    return call_user_func_array(array($this->query, 'hasAnyTag'), $args);
   }
 
   public function addMetaData($key, $object) {
@@ -981,11 +984,13 @@ class SelectQuery extends Query implements SelectQueryInterface {
   }
 
   public function hasAllTags() {
-    return !(boolean)array_diff(func_get_args(), array_keys($this->alterTags));
+    $args = func_get_args();
+    return !(boolean)array_diff($args, array_keys($this->alterTags));
   }
 
   public function hasAnyTag() {
-    return (boolean)array_intersect(func_get_args(), array_keys($this->alterTags));
+    $args = func_get_args();
+    return (boolean)array_intersect($args, array_keys($this->alterTags));
   }
 
   public function addMetaData($key, $object) {
@@ -1380,6 +1385,8 @@ class SelectQuery extends Query implements SelectQueryInterface {
   }
 
   public function orderBy($field, $direction = 'ASC') {
+    // Only allow ASC and DESC, default to ASC.
+    $direction = strtoupper($direction) == 'DESC' ? 'DESC' : 'ASC';
     $this->order[$field] = $direction;
     return $this;
   }
@@ -1605,5 +1612,5 @@ class SelectQuery extends Query implements SelectQueryInterface {
 }
 
 /**
- * @} End of "ingroup database".
+ * @} End of "addtogroup database".
  */

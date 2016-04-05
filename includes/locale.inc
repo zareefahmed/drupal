@@ -141,7 +141,7 @@ function locale_language_from_browser($languages) {
   //   language-range  = ( ( 1*8ALPHA *( "-" 1*8ALPHA ) ) | "*" )
   // Samples: "hu, en-us;q=0.66, en;q=0.33", "hu,en-us;q=0.5"
   $browser_langcodes = array();
-  if (preg_match_all('@([a-zA-Z-]+|\*)(?:;q=([0-9.]+))?(?:$|\s*,\s*)@', trim($_SERVER['HTTP_ACCEPT_LANGUAGE']), $matches, PREG_SET_ORDER)) {
+  if (preg_match_all('@(?<=[, ]|^)([a-zA-Z-]+|\*)(?:;q=([0-9.]+))?(?:$|\s*,\s*)@', trim($_SERVER['HTTP_ACCEPT_LANGUAGE']), $matches, PREG_SET_ORDER)) {
     foreach ($matches as $match) {
       // We can safely use strtolower() here, tags are ASCII.
       // RFC2616 mandates that the decimal part is no more than three digits,
@@ -279,6 +279,12 @@ function locale_language_from_url($languages) {
       break;
 
     case LOCALE_LANGUAGE_NEGOTIATION_URL_DOMAIN:
+      // Get only the host, not the port.
+      $http_host= $_SERVER['HTTP_HOST'];
+      if (strpos($http_host, ':') !== FALSE) {
+        $http_host_tmp = explode(':', $http_host);
+        $http_host = current($http_host_tmp);
+      }
       foreach ($languages as $language) {
         // Skip check if the language doesn't have a domain.
         if ($language->domain) {
@@ -286,7 +292,7 @@ function locale_language_from_url($languages) {
           // Remove protocol and add http:// so parse_url works
           $host = 'http://' . str_replace(array('http://', 'https://'), '', $language->domain);
           $host = parse_url($host, PHP_URL_HOST);
-          if ($_SERVER['HTTP_HOST'] == $host) {
+          if ($http_host == $host) {
             $language_url = $language->language;
             break;
           }
@@ -392,7 +398,7 @@ function locale_language_switcher_session($type, $path) {
       $links[$langcode]['query'][$param] = $langcode;
     }
     else {
-      $links[$langcode]['attributes']['class'][] = ' session-active';
+      $links[$langcode]['attributes']['class'][] = 'session-active';
     }
   }
 
@@ -430,8 +436,27 @@ function locale_language_url_rewrite_url(&$path, &$options) {
       case LOCALE_LANGUAGE_NEGOTIATION_URL_DOMAIN:
         if ($options['language']->domain) {
           // Ask for an absolute URL with our modified base_url.
+          global $is_https;
+          $url_scheme = ($is_https) ? 'https://' : 'http://';
           $options['absolute'] = TRUE;
-          $options['base_url'] = $options['language']->domain;
+
+          // Take the domain without ports or protocols so we can apply the
+          // protocol needed. The setting might include a protocol.
+          // This is changed in Drupal 8 but we need to keep backwards
+          // compatibility for Drupal 7.
+          $host = 'http://' . str_replace(array('http://', 'https://'), '', $options['language']->domain);
+          $host = parse_url($host, PHP_URL_HOST);
+
+          // Apply the appropriate protocol to the URL.
+          $options['base_url'] = $url_scheme . $host;
+          if (isset($options['https']) && variable_get('https', FALSE)) {
+            if ($options['https'] === TRUE) {
+              $options['base_url'] = str_replace('http://', 'https://', $options['base_url']);
+            }
+            elseif ($options['https'] === FALSE) {
+              $options['base_url'] = str_replace('https://', 'http://', $options['base_url']);
+            }
+          }
         }
         break;
 
@@ -978,22 +1003,13 @@ function _locale_import_one_string($op, $value = NULL, $mode = NULL, $lang = NUL
           // data untouched or if we don't have an existing plural formula.
           $header = _locale_import_parse_header($value['msgstr']);
 
-          // Get the plural formula and update in database.
+          // Get and store the plural formula if available.
           if (isset($header["Plural-Forms"]) && $p = _locale_import_parse_plural_forms($header["Plural-Forms"], $file->uri)) {
             list($nplurals, $plural) = $p;
             db_update('languages')
               ->fields(array(
                 'plurals' => $nplurals,
                 'formula' => $plural,
-              ))
-              ->condition('language', $lang)
-              ->execute();
-          }
-          else {
-            db_update('languages')
-              ->fields(array(
-                'plurals' => 0,
-                'formula' => '',
               ))
               ->condition('language', $lang)
               ->execute();
@@ -1844,7 +1860,16 @@ function _locale_translate_seek() {
   }
 
   $sql_query = db_select('locales_source', 's');
-  $sql_query->leftJoin('locales_target', 't', 't.lid = s.lid');
+
+  $limit_language = NULL;
+  if ($query['language'] != 'en' && $query['language'] != 'all') {
+    $sql_query->leftJoin('locales_target', 't', "t.lid = s.lid AND t.language = :langcode", array(':langcode' => $query['language']));
+    $limit_language = $query['language'];
+  }
+  else {
+    $sql_query->leftJoin('locales_target', 't', 't.lid = s.lid');
+  }
+
   $sql_query->fields('s', array('source', 'location', 'context', 'lid', 'textgroup'));
   $sql_query->fields('t', array('translation', 'language'));
 
@@ -1871,12 +1896,6 @@ function _locale_translate_seek() {
       }
       $sql_query->condition($condition);
       break;
-  }
-
-  $limit_language = NULL;
-  if ($query['language'] != 'en' && $query['language'] != 'all') {
-    $sql_query->condition('language', $query['language']);
-    $limit_language = $query['language'];
   }
 
   // Add a condition on the text group.
@@ -1912,7 +1931,7 @@ function _locale_translate_seek() {
       $groups[$string['group']],
       array('data' => check_plain(truncate_utf8($string['source'], 150, FALSE, TRUE)) . '<br /><small>' . $string['location'] . '</small>'),
       $string['context'],
-      array('data' => _locale_translate_language_list($string['languages'], $limit_language), 'align' => 'center'),
+      array('data' => _locale_translate_language_list($string, $limit_language), 'align' => 'center'),
       array('data' => l(t('edit'), "admin/config/regional/translate/edit/$lid", array('query' => drupal_get_destination())), 'class' => array('nowrap')),
       array('data' => l(t('delete'), "admin/config/regional/translate/delete/$lid", array('query' => drupal_get_destination())), 'class' => array('nowrap')),
     );
@@ -2107,16 +2126,21 @@ function _locale_rebuild_js($langcode = NULL) {
 /**
  * List languages in search result table
  */
-function _locale_translate_language_list($translation, $limit_language) {
+function _locale_translate_language_list($string, $limit_language) {
   // Add CSS.
   drupal_add_css(drupal_get_path('module', 'locale') . '/locale.css');
 
+  // Include both translated and not yet translated target languages in the
+  // list. The source language is English for built-in strings and the default
+  // language for other strings.
   $languages = language_list();
-  unset($languages['en']);
+  $default = language_default();
+  $omit = $string['group'] == 'default' ? 'en' : $default->language;
+  unset($languages[$omit]);
   $output = '';
   foreach ($languages as $langcode => $language) {
     if (!$limit_language || $limit_language == $langcode) {
-      $output .= (!empty($translation[$langcode])) ? $langcode . ' ' : "<em class=\"locale-untranslated\">$langcode</em> ";
+      $output .= (!empty($string['languages'][$langcode])) ? $langcode . ' ' : "<em class=\"locale-untranslated\">$langcode</em> ";
     }
   }
 
@@ -2282,6 +2306,8 @@ function _locale_batch_build($files, $finished = NULL, $components = array()) {
 }
 
 /**
+ * Implements callback_batch_operation().
+ *
  * Perform interface translation import as a batch step.
  *
  * @param $filepath
@@ -2300,6 +2326,8 @@ function _locale_batch_import($filepath, &$context) {
 }
 
 /**
+ * Implements callback_batch_finished().
+ *
  * Finished callback of system page locale import batch.
  * Inform the user of translation files imported.
  */
@@ -2310,6 +2338,8 @@ function _locale_batch_system_finished($success, $results) {
 }
 
 /**
+ * Implements callback_batch_finished().
+ *
  * Finished callback of language addition locale import batch.
  * Inform the user of translation files imported.
  */
